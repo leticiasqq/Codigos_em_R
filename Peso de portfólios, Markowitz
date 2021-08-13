@@ -1,0 +1,220 @@
+##install.packages("foreach")
+##install.packages("DEoptim")
+##install.packages("iterators")
+##install.packages("fGarch")
+##install.packages("Rglpk")
+#install.packages("ROI")
+#install.packages("ROI.plugin.glpk")
+#install.packages("ROI.plugin.quadprog")
+
+
+##library(foreach)
+##library(DEoptim)
+##library(iterators)
+##library(fGarch)
+##library(Rglpk)
+library(ROI)
+library(ROI.plugin.glpk)
+library(ROI.plugin.quadprog)
+##pacman::p_load(tidyverse,tidyquant,PortfolioAnalytics,quantmod,PerformanceAnalytics,zoo,
+##               plotly,timekit,ggthemes,quadprog)
+
+
+
+##############################
+#install.packages("PortfolioAnalytics")
+#install.packages("quantmod")
+#install.packages("PerformanceAnalytics")
+#install.packages("zoo")
+#install.packages("plotly")
+
+library(PortfolioAnalytics)
+library(quantmod)
+library(PerformanceAnalytics)
+##library(zoo)
+#install.packages("ggplot2") #essencial para o plotly!!!!!!!!!!!!!
+library(plotly)
+
+# Get data
+#getSymbols(c("MSFT", "NVDA", "IBM", "AAPL", "FB", "AMZN"),from = " 2015-01-01",src = 'yahoo')
+getSymbols(c("AIEC11.SA", "ALZR11.SA", "ARRI11.SA","NSLU11.SA","BPRP11.SA","AFOF11.SA"),from = "2019-01-12",src = 'yahoo')
+
+# Assign to dataframe
+# Get adjusted prices
+#prices.data <- merge.zoo(MSFT[,6], NVDA[,6], IBM[,6], AAPL[,6], FB[,6], AMZN[,6])
+prices.data <- merge.zoo(ALZR11.SA[,6], ARRI11.SA[,6],NSLU11.SA[,6], BPRP11.SA[,6])
+
+#Visualize data
+head(prices.data)
+
+# Calculate returns
+returns.data <- sapply(prices.data, CalculateReturns) #aplica func de PerformanceAnalytics
+returns.data <- na.omit(returns.data) #Retira os NAs
+# Set names
+colnames(returns.data) <- c("ALZR11", "ARRI11","BPRP11" ,"NSLU11")
+
+#Visualize data
+head(returns.data)
+
+# Save mean return vector and sample covariance matrix
+meanReturns <- colMeans(returns.data) #calcula retorno medio
+meanReturns
+
+covMat <- cov(returns.data) #calcula matriz de covariancias
+covMat
+#Calculo da Matrix de Correlacoes
+D = sqrt(diag(covMat))
+Dinv = solve(diag(D))
+CorrMat = Dinv%*%covMat%*%Dinv
+colnames(CorrMat) = colnames(covMat)
+rownames(CorrMat) = rownames(covMat)
+CorrMat
+
+# Start with the names of the assets
+p <- portfolio.spec(assets = colnames(returns.data)) #constroi classe portfolio
+
+# Box
+p <- add.constraint(p, type = "box", min = 0.05, max = 0.8) #peso minimo e maximo por ativo
+#p <- add.constraint(p, type = "box", min = 0, max = 1) #peso minimo e maximo por ativo
+
+# Leverage
+p <- add.constraint(portfolio = p, type = "full_investment") #soma dos pesos = 1
+
+# Generate random portfolios: gera vários portfolios randomicos (impossivel gerar todas as combinacoes)
+randomport<- random_portfolios(p, permutations = 50000, rp_method = "sample")
+
+
+p <- add.constraint(portfolio = p, type = "full_investment")
+p <- add.constraint(p, type="long_only") #long only permite qualquer peso para ativos
+# Get minimum variance portfolio
+minvar.port <- add.objective(p, type = "risk", name = "var")
+
+# Optimize
+minvar.opt <- optimize.portfolio(returns.data, minvar.port, optimize_method = "random", 
+                                 rp = randomport)
+
+# Generate maximum return portfolio
+maxret.port <- add.objective(p, type = "return", name = "mean")
+
+# Optimize
+maxret.opt <- optimize.portfolio(returns.data, maxret.port, optimize_method = "random", 
+                                 rp = randomport)
+
+# Generate vector of returns
+#minret <- 0.02/100
+minret <- min(meanReturns)
+maxret <- max(meanReturns)
+#maxret <- maxret.opt$weights %*% meanReturns
+
+vec <- seq(minret, maxret, length.out = 100) #pega sequencia de retornos entre max e min
+
+#monta data frame para fronteira eficiente
+eff.frontier <- data.frame(Risk =vector("numeric", length(vec)) ,
+                           Return = vector("numeric", length(vec)))
+
+#monta tabela de pesos
+frontier.weights <- mat.or.vec(nr = length(vec), nc = ncol(returns.data))
+colnames(frontier.weights) <- colnames(returns.data)
+
+#atribui valores aos dataframe criados:
+#para cada um dos portfolios gerados randomicamente,
+#calcula o par risco-retorno do portfolio
+#e monta a fronteira eficiente buscando aqueles de maior retorno
+#para determinado nivel de risco
+for(i in 1:length(vec)){
+  
+  # Creates a new portfolio object using p and adds mean as an objective
+  
+  p <- add.constraint(p, type = "return", name = "mean", return_target = vec[i])
+  
+  # Creates a new portfolio object using p and adds var as an objective
+  p <- add.objective(p, type = "risk", name = "var")
+  
+  # Creates a new portfolio object using p and adds a weight_concentration
+  # objective. The conc_aversion parameter controls how much concentration is
+  # penalized. The portfolio concentration is defined as the Herfindahl Hirschman
+  # Index of the weights.
+  
+  #Obriga a ter uma concentracao minima/maxima de todos os ativos
+  #p <- add.objective(p, type = "weight_concentration", name = "HHI",
+  #                  conc_aversion = 0.01)
+  
+  #Otimiza o risco da carteira
+  p <- add.objective(p, type="risk", name="StdDev")
+  
+  eff.opt <- optimize.portfolio(returns.data, p, optimize_method = "ROI")
+  
+  eff.frontier$Risk[i] <- sqrt(t(eff.opt$weights) %*% covMat %*% eff.opt$weights)
+  
+  eff.frontier$Return[i] <- eff.opt$weights %*% meanReturns
+  
+  
+  
+  frontier.weights[i,] = eff.opt$weights
+  
+  # print(paste(round(i/length(vec) * 100, 0), "% done..."))
+  
+}
+#Transformando em Valores Anualizados
+eff.frontier$Risk = eff.frontier$Risk*sqrt(252)
+eff.frontier$Return = eff.frontier$Return*252
+
+#Caclula indice de sharpe do portfolio
+eff.frontier$Sharperatio <- eff.frontier$Return / eff.frontier$Risk
+
+#Portfolios factiveis
+feasible.sd <- sqrt(252)*apply(randomport, 1, function(x){
+  return(sqrt(matrix(x, nrow = 1) %*% covMat %*% matrix(x, ncol = 1)))
+})
+
+#média dos portfolios factiveis
+feasible.means <- 252*apply(randomport, 1, function(x){
+  return(x %*% meanReturns)
+})
+
+#Sharpe dos portfolios factiveis
+feasible.sr <- feasible.means / feasible.sd
+#Plot dos resultados usando plotly
+
+p <- plot_ly() %>%
+  add_trace(x = feasible.sd, y = feasible.means, color = feasible.sr, 
+            mode = "markers", type = "scattergl", showlegend = F,
+            
+            marker = list(size = 3, opacity = 0.5, 
+                          colorbar = list(title = "Sharpe Ratio"))) %>%
+  add_trace(data = eff.frontier, x = ~Risk, y = ~Return,mode = "markers", type = "scattergl")%>% 
+  layout(title = "Efficient Frontier",
+         yaxis = list(title = "Mean Returns", tickformat = ".2%"),
+         xaxis = list(title = "Standard Deviation", tickformat = ".2%"))
+p
+
+# Salvando imagem como HTML
+if(!require("htmlwidgets")) {install.packages("htmlwidgets"); require("htmlwidgets")}
+htmlwidgets::saveWidget(p, "efficient_frontier.html")
+
+#############################
+#Ver index do portfolio desejado
+eff.frontier
+
+require(tibble)
+d=as_tibble(frontier.weights)%>%tidyr::gather(Stock,Weights)%>%add_column(Index=rep(1:100,ncol(frontier.weights)))
+p <- plot_ly(d, x = ~Index, y = ~Weights, color = ~Stock, type = "bar") %>%
+  layout(title = "Portfolio weights across frontier", barmode = "stack",
+         xaxis = list(title = "Index"),
+         yaxis = list(title = "Weights(%)", tickformat = ".0%"))
+p
+htmlwidgets::saveWidget(p, "port_weights.html")
+
+#Colocando portfolio escolhido em um grafico de pizza
+PortfolioIndex = 24
+# Pie Chart with Percentages
+slices <- frontier.weights[PortfolioIndex,]
+slices[slices<0] = 0 #Remove erros de aprox t.q. prob<0
+lbls <- colnames(frontier.weights)
+pct <- round(slices/sum(slices)*100)
+lbls <- paste(lbls, pct) # add percents to labels 
+lbls <- paste(lbls,"%",sep="") # ad % to labels 
+pie(slices,labels = lbls, col=rainbow(length(lbls)),
+    main="Chosen Portfolio",radius=1.5)
+
+#############################
