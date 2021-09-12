@@ -1,0 +1,229 @@
+source("/cloud/project/install_and_load_packages.R")
+
+# Instalar pacotes necessÃ¡rios
+install.packages(c("tidyverse","nycflights13","jsonlite","httr","Quandl","magrittr","highcharter","forecast","tseries"))
+# Carregar os pacotes no ambiente 
+suppressMessages(require(Quandl))
+suppressMessages(require(dygraphs))
+suppressMessages(require(magrittr))
+suppressMessages(require(PerformanceAnalytics))
+suppressMessages(require(quantmod))
+
+#########################################
+######    IMPORTAÃÃO DOS DADOS     ######
+#########################################
+
+Quandl.api_key('4udYeMky_iNH4fiyZzLE')
+
+#Coleta de dados Ãndice de BasilÃ©ia Quandl
+#Capacidade <- Quandl('BCB/1341')
+Capacidade <- Quandl('BCB/1341', start_date = "1996-01-03", end_date = "2010-12-31", type="ts")
+#Capacidade <- Quandl('BCB/1341', start_date = "1996-01-01")
+#Capacidade <- Quandl("BCB/1341", collapse = "monthly", start_date = "1996-01-01")
+#Capacidade <- Quandl("BCB/1341", transform = "diff", start_date = "1996-01-01")
+#Capacidade <- Quandl("BCB/1341", start_date = "1996-01-01", end_date= "2010-12-31" type = "ts")
+#Capacidade <- Quandl("BCB/1341", start_date = "1996-01-01", type = "xts")
+
+colnames(Capacidade) <- "Capacidade da Indústria"
+dygraphs::dygraph(Capacidade, main = "Capacidade Instalada da Indústria") %>% dyRangeSelector()
+
+#########################################
+###### MODELO PARA O NÃVEL DA SÃRIE ##### 
+#########################################
+
+#####
+##   1: Visualizar os dados para identificar observaÃ§Ãµes fora do padrÃ£o (outliers ou dados faltantes), examinar se existe tendÃªncia e/ou sazonalidade por meio de grÃ¡ficos especÃ­ficos
+
+#Visualizar dados para identificar observaÃ§Ãµes fora do padrÃ£o
+Capacidade_Mensal <- Quandl("BCB/1341", start_date = "1996-01-01", type = "ts")
+# GrÃ¡fico da sÃ©rie temporal
+par(mfrow=c(1,1)) 
+plot(Capacidade_Mensal, xlab = "Ano", ylab = "UtilizaÃ§Ã£o", main = "Capacidade Mensal")
+monthplot(Capacidade_Mensal,xlab = "Ano", ylab = "UtilizaÃ§Ã£o")
+
+# Examinar a existÃªncia de tendÃªncia e/ou sazonalidade nos dados
+decomp <- stats::stl(Capacidade_Mensal, "periodic")
+colnames(decomp$time.series) = c("sazonalidade","tendÃªncia","restante")
+plot(decomp)
+
+#####
+##   2: Se necessÃ©rio, transformar os dados para estabilizar a variÃ¢ncia (logaritmo dos dados, varia??o ou retorno, por exemplo)
+#####
+
+# Para estabilizar a variÃ¢ncia vamos aplicar o logaritmo nos dados 
+log_Capacidade_Mensal <- (log(Capacidade_Mensal))
+
+# GrÃ¡fico do logaritmo da capacidade industrial mensal. Observe que antes os dados oscilavam de 100 
+# atÃ© 600 e agora oscilam de em torno de 4 atÃ© 6.5
+par(mfrow=c(1,1)) 
+plot(log_Capacidade_Mensal, xlab = "Ano", ylab = "Log da UtilizaÃ§Ã£o da Capacidade Instalada", main = "")
+
+#Testar se os dados sÃ£o estacionÃ¡rios
+# - H0: raiz unitÃ¡ria (passeio aleatÃ³rio)
+# - H1: sem raiz unitÃ¡ria (nÃ£o Ã© um passeio aleatÃ³rio)
+unitRootnc_Capacidade_Mensal <- fUnitRoots::adfTest(Capacidade_Mensal, lags = 12, type = c("nc"))
+print(unitRootnc_Capacidade_Mensal)
+
+unitRootc_Capacidade_Mensal <- fUnitRoots::adfTest(Capacidade_Mensal, lags = 12, type = c("c"))
+print(unitRootc_Capacidade_Mensal)
+
+unitRootct_Capacidade_Mensal <- fUnitRoots::adfTest(Capacidade_Mensal, lags = 12, type = c("ct"))
+print(unitRootct_Capacidade_Mensal)
+
+#realizar a primeira diferenÃ§a 
+Capacidade_Mensaldiff0<- diff(Capacidade_Mensal, differences=1)
+plot.ts(Capacidade_Mensaldiff0)
+
+Capacidade_Mensaldiff<- diff(Capacidade_Mensaldiff0, lag=12)
+plot.ts(Capacidade_Mensaldiff)
+
+#Testar se os dados sÃ£o estacionÃ¡rios
+unitRootnc_Capacidade_Mensaldiff <- fUnitRoots::adfTest(Capacidade_Mensaldiff, lags =12, type = c("nc"))
+print(unitRootnc_Capacidade_Mensaldiff)
+
+unitRootc_Capacidade_Mensaldiff <- fUnitRoots::adfTest(Capacidade_Mensaldiff, lags = 12, type = c("c"))
+print(unitRootc_Capacidade_Mensaldiff)
+
+unitRootct_Capacidade_Mensaldiff <- fUnitRoots::adfTest(Capacidade_Mensaldiff, lags = 12, type = c("ct"))
+print(unitRootct_Capacidade_Mensaldiff)
+
+##   4: Examinar as funÃ§Ãµes de autocorrelaÃ§Ã£o parcial (FAC) e autocorrelaÃ§Ã£o parcial (FACP) para determinar as ordens mÃ¡ximas P e Q para os componentes AR e MA tanto da parte regular quanto da parte sazonal da sÃ©rie estacionÃ¡ria:
+#####
+
+# Calcular a FAC
+acf_Capacidade_Mensaldiff <- stats::acf(Capacidade_Mensaldiff, plot = FALSE, na.action = na.pass, lag.max = 24)
+
+# Calcular a FACP 
+pacf_Capacidade_Mensaldiff <- stats::pacf(Capacidade_Mensaldiff, plot = FALSE, na.action = na.pass, lag.max = 24)
+par(mfrow=c(2,1)) 
+plot(acf_Capacidade_Mensaldiff, main = "", ylab = "", xlab = "Defasagem")
+title("FunÃ§Ã£o de AutocorrelaÃ§Ã£o (FAC)", adj = 0.5, line = 1)
+plot(pacf_Capacidade_Mensaldiff, main = "", ylab = "", xlab = "Defasagem")
+title("FunÃ§Ã£o de AutocorrelaÃ§Ã£o Parcial (FACP)", adj = 0.5, line = 1)
+
+#####
+##   5: Estimar todas as combinaÃ§Ãµes para p, d e q. Aqui, d serÃ¡ fixo e igual ao nÃºmero de vezes necessÃ¡rias para tornar a sÃ©rie original estacionÃ¡ria. Se nÃ£o foi preciso diferenciar a sÃ©rie, d=0
+#####
+
+# Todas as combinaÃ§Ã£oes possÃ­veis de p=0 atÃ© p=max e q=0 atÃ© q=max para a parte nÃ£o sazonal e P=0 atÃ© P=max e Q=0 atÃ© Q=max para a parte sazonal
+pars_Capacidade_Mensaldiff <- expand.grid(ar = 0:1, diff = 1, ma = 0:1, ars = 0:2, diffs = 1, mas = 0:1)
+
+# Local onde os resultados de cada modelo serÃ¡ armazenado
+modelo_Capacidade_Mensaldiff <- list()
+
+# Estimar os par?metros dos modelos usando M?xima Verossimilhan?a (ML). Por default, a fun??o arima
+# usa a hip?tese de que o termo de erro dos modelos arima segue uma distribui??o Normal
+for (i in 1:nrow(pars_Capacidade_Mensaldiff)) {
+  modelo_Capacidade_Mensaldiff[[i]] <- arima(x = Capacidade_Mensaldiff, order = unlist(pars_Capacidade_Mensaldiff[i, 1:3]), 
+                                             seasonal = list(order = unlist(pars_Capacidade_Mensaldiff[i,4:6]), period = 12), method = "ML")
+}
+
+
+# Obter o logaritmo da verossimilhan?a (valor m?ximo da fun??o)
+log_verossimilhanca_Capacidade_Mensaldiff <- list()
+for (i in 1:length(modelo_Capacidade_Mensaldiff)) {
+  log_verossimilhanca_Capacidade_Mensaldiff[[i]] <- modelo_Capacidade_Mensaldiff[[i]]$loglik
+}
+
+# Calcular o AIC
+aicsarima_Capacidade_Mensaldiff <- list()
+for (i in 1:length(modelo_Capacidade_Mensaldiff)) {
+  aicsarima_Capacidade_Mensaldiff[[i]] <- stats::AIC(modelo_Capacidade_Mensaldiff[[i]])
+}
+
+# Calcular o BIC
+bicsarima_Capacidade_Mensaldiff <- list()
+for (i in 1:length(modelo_Capacidade_Mensaldiff)) {
+  bicsarima_Capacidade_Mensaldiff[[i]] <- stats::BIC(modelo_Capacidade_Mensaldiff[[i]])
+}
+
+# Quantidade de par?metros estimados por modelo
+quant_paramentros_Capacidade_Mensaldiff <- list()
+for (i in 1:length(modelo_Capacidade_Mensaldiff)) {
+  quant_paramentros_Capacidade_Mensaldiff[[i]] <- length(modelo_Capacidade_Mensaldiff[[i]]$coef)+1 # +1 porque temos a vari?ncia do termo de erro 
+}
+
+# Montar a tabela com os resultados
+especificacao_Capacidade_Mensaldiff <- paste0("SARIMA",pars_Capacidade_Mensaldiff$ar, pars_Capacidade_Mensaldiff$diff, pars_Capacidade_Mensaldiff$ma, pars_Capacidade_Mensaldiff$ars, pars_Capacidade_Mensaldiff$diffs, pars_Capacidade_Mensaldiff$mas)
+tamanho_amostra_Capacidade_Mensaldiff <- rep(length(Capacidade_Mensaldiff), length(modelo_Capacidade_Mensaldiff))
+resultado_Capacidade_Mensaldiff <- data.frame(especificacao_Capacidade_Mensaldiff, 
+                                              ln_verossimilhanca = unlist(log_verossimilhanca_Capacidade_Mensaldiff),
+                                              quant_paramentros_Capacidade_Mensaldiff = unlist(quant_paramentros_Capacidade_Mensaldiff), 
+                                              tamanho_amostra_Capacidade_Mensaldiff, 
+                                              aic = unlist(aicsarima_Capacidade_Mensaldiff), 
+                                              bic = unlist(bicsarima_Capacidade_Mensaldiff))
+
+# Mostrar a tabela de resultado
+print(resultado_Capacidade_Mensaldiff)
+
+#6: Escolher dentre todos os modelos estimados no passo anterior, o modelo com menor AIC e/ou BIC.
+
+best <- which.min(resultado_Capacidade_Mensaldiff$aic)
+best <- which.min(resultado_Capacidade_Mensaldiff$bic)
+
+print(summary(modelo_Capacidade_Mensaldiff[[best]]))
+
+coeftest(modelo_Capacidade_Mensaldiff[[best]])
+
+#####
+##   7: Examinar se os resÃ­duos se comportam como ruÃ­do branco. Caso contrÃ¡rio, retornar ao passo 3 ou 4.
+#####
+# Teste de autocorrelaÃ§Ã£o dos resÃ­duos
+#  - H0: resÃ­duos sÃ£o nÃ£o autocorrelacionados
+#  - H1: resÃ­duos sÃ£o autocorrelacionados
+acf_sarima_est <- stats::acf(modelo_Capacidade_Mensaldiff[[best]]$residuals, na.action = na.pass, plot = FALSE, lag.max = 15)
+plot(acf_sarima_est, main = "", ylab = "", xlab = "Defasagem")
+title("FunÃ§Ã£o de AutocorrelaÃ§Ã£o (FAC) dos ResÃ­duos do SARIMA(0,1,1)(2,1,1)12", adj = 0.5, line = 1)
+Box.test(modelo_Capacidade_Mensaldiff[[best]]$residuals,type="Ljung",lag=1)
+
+# Teste de heterocedasticidade condicional
+#  - H0: quadrado dos resÃ­duos sÃ£o nÃ£o autocorrelacionados
+#  - H1: quadrado dos resÃ­duos sÃ£o autocorrelacionados
+acf_sarima_square <- acf(modelo_Capacidade_Mensaldiff[[best]]$residuals^2, na.action = na.pass, plot = FALSE, lag.max = 20)
+plot(acf_sarima_square, main = "", ylab = "", xlab = "Defasagem")
+title("FAC do quadrado dos resÃ­duos do SARIMA(0,1,1)(2,1,1)12", adj = 0.5, line = 1)
+Box.test(modelo_Capacidade_Mensaldiff[[best]]$residuals^2,type="Ljung",lag=1)
+
+#archTest(modelo_air_passengers[[best]]$residuals)
+# Teste de Normalidade dos resÃ­duos. As hipÃ³teses para os dois testes sÃ£o:
+#  - H0: resÃ­duos normalmente distribuÃ­dos
+#  - H1: resÃ­duos nÃ£o sÃ£o normalmente distribuÃ­dos
+shapiro.test(modelo_Capacidade_Mensaldiff[[best]]$residuals)
+jarque.bera.test(modelo_Capacidade_Mensaldiff[[best]]$residuals)
+hist(modelo_Capacidade_Mensaldiff[[best]]$residuals)
+
+# GrÃ¡fico do valores estimados para a sÃ©rie temporal e seus verdadeiros valores
+par(mfrow=c(1,1)) 
+fitted_Capacidade_Mensaldiff <- stats::fitted(modelo_Capacidade_Mensaldiff[[best]])
+plot(fitted_Capacidade_Mensaldiff, type = "l", lty = 1, col = 2)
+lines(Capacidade_Mensaldiff, type = "l", lty = 1, col = 4)
+legend("topleft", legend = c("Ajustado", "Real"), col = c(1,2), lty = c(1,3))
+
+#####
+##   8: Uma vez que os resÃ­duos sÃ£o ruÃ­do branco, obter as previsÃµes.
+#####
+
+# PrevisÃ£o do valor mÃ©dio condicional esperado e respectivo desvio
+# - object: o modelo escolhido anteriormente
+# - level: o intervalo de confianÃ§a (abaixo, 95%)
+# - h: o horizonte de previs?o
+forecast::forecast(object = modelo_Capacidade_Mensaldiff[[best]], h = 12, level = 0.95)
+
+#grÃ¡fico da previsÃ£o
+plot(forecast::forecast(object = modelo_Capacidade_Mensaldiff[[best]], h = 12, level = 0.95))
+
+#############################################
+###### MODELO PARA A VARIÃNCIA DA SÃRIE ##### 
+#############################################
+
+install.packages('fGarch')
+
+library('fGarch')
+
+# APARCH(1,1) - specify omega/alpha/beta
+
+fit = garchFit(~aparch(1, 1), data = Capacidade_Mensaldiff, cond.dist = c(""), algorithm = c("nlminb+nm"))
+
+# Previs?o do retorno esperado e vari?ncia esperada (ULTIMA PARTE, AQUI QUE TA DANDO PAU)
+
+grafico_final <- fGarch::predict(fit, n.ahead = n)
